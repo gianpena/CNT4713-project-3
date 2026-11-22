@@ -37,16 +37,22 @@ def get_client_public_key(username):
 def broadcast(msg):
     for username, sock in list(active_users.items()):
         try:
-            sock.sendall(msg)
+            sock.sendall(encrypt(
+                msg,
+                get_client_public_key(username)
+            ))
         except OSError:
             active_users.pop(username, None)
 
 def read(socket):
+    # TODO: Encrypted ciphertext is binary and may contain null bytes, so using '\0' as a delimiter
+    #       and decoding to UTF-8 here will not work for encrypted commands.
     pieces = [b'']
     total = 0
     while b'\0' not in pieces[-1] and total < 1048576:
         pieces.append(socket.recv(128))
         total += len(pieces[-1])
+    # TODO: Return raw bytes and decrypt them before decoding the plaintext command.
     data = b''.join(pieces).decode("utf-8").strip("\0")
     return data
 
@@ -66,9 +72,23 @@ class TCPServerRequestHandler(socketserver.BaseRequestHandler):
                 while True:
                     command = read(self.request)
                     print("Received encrypted message")
+                    # TODO: Ensure read() returns raw bytes for decrypt(); decode the decrypted
+                    #       plaintext before the command.startswith()/regex checks below.
                     command = decrypt(command)
 
+                    # TODO: The spec says the server should respond with an encrypted SHA256 hash of
+                    #       the message, but the output template shows clients receiving actual data.
+                    #       Confirm which response format the autograder expects.
+
                     if command.startswith("login"):
+                        # TODO: Parse the username and the full PEM public key from the decrypted login message.
+                        #       The current split assumes only two whitespace-separated tokens, which will
+                        #       break when the PEM contains newlines.
+                        # TODO: Validate that both username and public key are present; send 500 if any
+                        #       component is missing (per the spec).
+                        # TODO: The spec requires the entire login message (including the client's PEM
+                        #       public key) to be encrypted with RSA-2048, but a PEM key is larger than
+                        #       RSA-OAEP can encrypt. Determine how to handle this under the project rules.
                         username, client_public_key_string = command.split()[1:]
                         client_public_key = serialization.load_pem_public_key(client_public_key_string.encode("utf-8"))
 
@@ -78,19 +98,24 @@ class TCPServerRequestHandler(socketserver.BaseRequestHandler):
                             continue
 
                         active_users[username] = (data_socket, client_public_key)
-                        broadcast(encrypt(f"200\n\njoin\n{username}\0".encode("utf-8"), client_public_key))
+                        broadcast(f"200\n\njoin\n{username}\0".encode("utf-8"))
                     elif command.startswith("who"):
                         print("Who requested. Sending users.")
                         if not username:
                             data_socket.sendall(b"500\n\nYou must be logged in to use this command.\0")
                             continue
 
+                        # TODO: Confirm the required 'who' response format. The output template shows
+                        #       'Users currently connected: bob, mallory', not 'ACTIVE USERS\n...'.
+                        # TODO: If the spec's SHA256-hash-response rule applies, compute the hash and
+                        #       return encrypted hash instead of (or in addition to) the user list.
                         data_socket.sendall(encrypt(
                             f"200\n\nACTIVE USERS\n{"\n".join(user for user in active_users.keys())}\0".encode("utf-8"),
                             get_client_public_key(username)
                         ))
                     elif command.startswith("broadcast"):
                         match = re.search(r"^broadcast (.+)$", command)
+                        # TODO: Return 500 if the broadcast command is malformed (no match).
                         msg = match.group(1)
                         if not username:
                             data_socket.sendall(b"500\n\nYou must be logged in to use this command.\0")
@@ -98,16 +123,14 @@ class TCPServerRequestHandler(socketserver.BaseRequestHandler):
 
                         print(f"Broadcast requested by {username}")
                         print(f"Message: {msg}")
-                        broadcast(encrypt(
-                            f"200\n\nBroadcast\n{username}\n{msg}\0".encode("utf-8"),
-                            get_client_public_key(username)
-                        ))
+                        broadcast(f"200\n\nBroadcast\n{username}\n{msg}\0".encode("utf-8"))
                     elif command.startswith("private"):
                         if not username:
                             data_socket.sendall(b"500\n\nYou must be logged in to use this command.\0")
                             continue
 
                         match = re.search(r"^private ([^\s]+) (.+)$", command)
+                        # TODO: Return 500 if the private command is malformed (no match).
                         user, msg = match.group(1), match.group(2)
                         if user not in active_users:
                             data_socket.sendall(encrypt(
@@ -117,17 +140,17 @@ class TCPServerRequestHandler(socketserver.BaseRequestHandler):
                             continue
 
                         print(f"Private message from {username} to {user}")
-                        client_side_msg = encrypt(f"200\n\nPrivate\n{username}\n{msg}\0".encode("utf-8"), get_client_public_key(username))
-                        active_users[user].sendall(client_side_msg)
-                        data_socket.sendall(client_side_msg)
+                        client_side_msg = f"200\n\nPrivate\n{username}\n{msg}\0".encode("utf-8")
+                        active_users[user][0].sendall(encrypt(client_side_msg, get_client_public_key(user)))
+                        data_socket.sendall(encrypt(client_side_msg, get_client_public_key(username)))
                     elif command.startswith("quit"):
                         if not username:
                             data_socket.sendall(b"500\nYou must be logged in to use this command.\0")
                             continue
 
                         print(f"Quit requested by {username}")
-                        quit_msg = encrypt(f"200\n\nquit\n{username}\0".encode("utf-8"), get_client_public_key(username))
-                        data_socket.sendall(quit_msg)
+                        quit_msg = f"200\n\nquit\n{username}\0".encode("utf-8")
+                        data_socket.sendall(encrypt(quit_msg, get_client_public_key(username)))
                         active_users.pop(username, None)
                         broadcast(quit_msg)
                         break
