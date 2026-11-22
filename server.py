@@ -11,26 +11,38 @@ available_ports = deque(range(10000,65537))
 active_users = {}
 
 def encrypt(msg, key):
-    ciphertext = key.encrypt(
-        msg,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
+    ciphertext = b""
+
+    for i in range(0, len(msg), 190):
+        ciphertext += key.encrypt(
+            msg[i:i + 190],
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
         )
-    )
-    return base64.b64encode(ciphertext)
+
+    return base64.b64encode(ciphertext) + b"\0"
+
 
 def decrypt(msg):
     ciphertext = base64.b64decode(msg)
-    return private_key.decrypt(
-        ciphertext,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
+    plaintext = b""
+
+    for i in range(0, len(ciphertext), 256):
+        plaintext += private_key.decrypt(
+            ciphertext[i:i + 256],
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
         )
-    )
+
+    return plaintext
+
+
 
 def get_client_public_key(username):
     if username not in active_users: return None
@@ -39,22 +51,29 @@ def get_client_public_key(username):
 def broadcast(msg):
     for username, sock in list(active_users.items()):
         try:
-            sock.sendall(encrypt(
-                msg,
-                get_client_public_key(username)
-            ))
+            sock[0].sendall(encrypt(
+    msg,
+    get_client_public_key(username)
+))
         except OSError:
             active_users.pop(username, None)
 
-def read(socket):
-    pieces = [b'']
-    total = 0
-    while b'\0' not in pieces[-1] and total < 1048576:
-        pieces.append(socket.recv(128))
-        total += len(pieces[-1])
-    data = b''.join(pieces)
-    ciphertext, _, _ = data.partition(b'\0')
-    return decrypt(ciphertext)
+def read(sock):
+    pieces = []
+
+    while True:
+        chunk = sock.recv(128)
+
+        if not chunk:
+            raise ConnectionError("Connection closed")
+
+        if b"\0" in chunk:
+            pieces.append(chunk.split(b"\0", 1)[0])
+            break
+
+        pieces.append(chunk)
+
+    return decrypt(b"".join(pieces))
 
 class TCPServerRequestHandler(socketserver.BaseRequestHandler):
     def handle(self):
@@ -82,7 +101,7 @@ class TCPServerRequestHandler(socketserver.BaseRequestHandler):
                         # TODO: The spec requires the entire login message (including the client's PEM
                         #       public key) to be encrypted with RSA-2048, but a PEM key is larger than
                         #       RSA-OAEP can encrypt. Determine how to handle this under the project rules.
-                        username, client_public_key_string = command.split()[1:]
+                        _, username, client_public_key_string = command.split("\n", 2)
                         client_public_key = serialization.load_pem_public_key(client_public_key_string.encode("utf-8"))
 
                         print(f"Login requested by: {username}")
