@@ -5,6 +5,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import serialization
 
 available_ports = deque(range(10000,65537))
 active_users = {}
@@ -30,10 +31,10 @@ def decrypt(msg):
     )
 
 def broadcast(msg):
-    # TODO: Encrypt the message for each specific recipient using their public key before sending.
+    encrypted_msg = encrypt(msg)
     for username, sock in list(active_users.items()):
         try:
-            sock.sendall(msg)
+            sock.sendall(encrypted_msg)
         except OSError:
             active_users.pop(username, None)
 
@@ -51,9 +52,7 @@ class TCPServerRequestHandler(socketserver.BaseRequestHandler):
         ip = self.request.getpeername()[0]
         next_data_port = available_ports.popleft()
         try:
-            # TODO: Append the server's public key to the connect response
-            #       (status code, blank line, data port, public key).
-            self.request.sendall(f"200\n\n{next_data_port}\0".encode("utf-8"))
+            self.request.sendall(f"200\n\n{next_data_port}\n{public_key_pem}\0".encode("utf-8"))
 
             print("Connection requested. Creating data socket")
             time.sleep(0.75)
@@ -64,7 +63,7 @@ class TCPServerRequestHandler(socketserver.BaseRequestHandler):
                 while True:
                     command = read(self.request)
                     print("Received encrypted message")
-                    # TODO: Decrypt the incoming encrypted command using the server's private key.
+                    command = decrypt(command)
 
                     if command.startswith("login"):
                         # TODO: Extract username and the client's public key from the decrypted login message.
@@ -190,6 +189,10 @@ private_key = rsa.generate_private_key(
     key_size=2048
 )
 public_key = private_key.public_key()
+public_key_pem = public_key.public_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PublicFormat.SubjectPublicKeyInfo
+).decode("utf-8")
 print("RSA keypair created")
 print("Creating server socket")
 with socketserver.ThreadingTCPServer((HOST, PORT), TCPServerRequestHandler) as server:
