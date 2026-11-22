@@ -10,8 +10,8 @@ from cryptography.hazmat.primitives import serialization
 available_ports = deque(range(10000,65537))
 active_users = {}
 
-def encrypt(msg):
-    return public_key.encrypt(
+def encrypt(msg, key):
+    return key.encrypt(
         msg,
         padding.OAEP(
             mgf=padding.MGF1(algorithm=hashes.SHA256()),
@@ -30,11 +30,14 @@ def decrypt(msg):
         )
     )
 
+def get_client_public_key(username):
+    if username not in active_users: return None
+    return active_users[username][1]
+
 def broadcast(msg):
-    encrypted_msg = encrypt(msg)
     for username, sock in list(active_users.items()):
         try:
-            sock.sendall(encrypted_msg)
+            sock.sendall(msg)
         except OSError:
             active_users.pop(username, None)
 
@@ -66,108 +69,124 @@ class TCPServerRequestHandler(socketserver.BaseRequestHandler):
                     command = decrypt(command)
 
                     if command.startswith("login"):
-                        # TODO: Extract username and the client's public key from the decrypted login message.
-                        username = command.split()[1]
+                        username, client_public_key_string = command.split()[1:]
+                        client_public_key = serialization.load_pem_public_key(client_public_key_string.encode("utf-8"))
+
                         print(f"Login requested by: {username}")
                         if username in active_users:
-                            # TODO: Encrypt the 500 error response with the correct key.
-                            data_socket.sendall(b"500\n\nThe username you entered is already taken.\0")
+                            data_socket.sendall(encrypt(b"500\n\nThe username you entered is already taken.\0", client_public_key))
                             continue
 
-                        # TODO: Store the client's public key along with the user's data socket
-                        #       (e.g., active_users[username] = (data_socket, public_key)).
-                        active_users[username] = data_socket
-                        # TODO: Encrypt the join notification with each active client's public key before broadcasting.
-                        broadcast(f"200\n\njoin\n{username}\0".encode("utf-8"))
+                        active_users[username] = (data_socket, client_public_key)
+                        broadcast(encrypt(f"200\n\njoin\n{username}\0".encode("utf-8"), client_public_key))
                     elif command.startswith("who"):
                         print("Who requested. Sending users.")
                         if not username:
-                            # TODO: Encrypt the 500 error response with the correct key.
                             data_socket.sendall(b"500\n\nYou must be logged in to use this command.\0")
                             continue
 
-                        # TODO: Encrypt the active users list with the requesting client's public key before sending.
-                        data_socket.sendall(f"200\n\nACTIVE USERS\n{"\n".join(user for user in active_users.keys())}\0".encode("utf-8"))
+                        data_socket.sendall(encrypt(
+                            f"200\n\nACTIVE USERS\n{"\n".join(user for user in active_users.keys())}\0".encode("utf-8"),
+                            get_client_public_key(username)
+                        ))
                     elif command.startswith("broadcast"):
                         match = re.search(r"^broadcast (.+)$", command)
                         msg = match.group(1)
                         if not username:
-                            # TODO: Encrypt the 500 error response with the correct key.
                             data_socket.sendall(b"500\n\nYou must be logged in to use this command.\0")
                             continue
 
                         print(f"Broadcast requested by {username}")
                         print(f"Message: {msg}")
-                        # TODO: Encrypt the broadcast message with each recipient's public key before sending.
-                        broadcast(f"200\n\nBroadcast\n{username}\n{msg}\0".encode("utf-8"))
+                        broadcast(encrypt(
+                            f"200\n\nBroadcast\n{username}\n{msg}\0".encode("utf-8"),
+                            get_client_public_key(username)
+                        ))
                     elif command.startswith("private"):
                         if not username:
-                            # TODO: Encrypt the 500 error response with the correct key.
                             data_socket.sendall(b"500\n\nYou must be logged in to use this command.\0")
                             continue
 
                         match = re.search(r"^private ([^\s]+) (.+)$", command)
                         user, msg = match.group(1), match.group(2)
                         if user not in active_users:
-                            # TODO: Encrypt the 500 error response with the correct key.
-                            data_socket.sendall(f"500\n\nUser {user} is not an active user.\0".encode("utf-8"))
+                            data_socket.sendall(encrypt(
+                                f"500\n\nUser {user} is not an active user.\0".encode("utf-8"),
+                                get_client_public_key(username)
+                            ))
                             continue
 
                         print(f"Private message from {username} to {user}")
-                        # TODO: Encrypt the private message with the recipient's public key before sending.
-                        client_side_msg = f"200\n\nPrivate\n{username}\n{msg}\0".encode("utf-8")
+                        client_side_msg = encrypt(f"200\n\nPrivate\n{username}\n{msg}\0".encode("utf-8"), get_client_public_key(username))
                         active_users[user].sendall(client_side_msg)
                         data_socket.sendall(client_side_msg)
                     elif command.startswith("quit"):
                         if not username:
-                            # TODO: Encrypt the 500 error response with the correct key.
                             data_socket.sendall(b"500\nYou must be logged in to use this command.\0")
                             continue
 
                         print(f"Quit requested by {username}")
-                        # TODO: Encrypt the quit response/notification with the correct keys before sending.
-                        quit_msg = f"200\n\nquit\n{username}\0".encode("utf-8")
+                        quit_msg = encrypt(f"200\n\nquit\n{username}\0".encode("utf-8"), get_client_public_key(username))
                         data_socket.sendall(quit_msg)
                         active_users.pop(username, None)
                         broadcast(quit_msg)
                         break
                     elif command.startswith("list"):
+                        if not username:
+                            data_socket.sendall(b"500\nYou must be logged in to use this command.\0")
+                            continue
+
                         files = ", ".join(item.name for item in Path("./").iterdir() if item.is_file())
-                        msg = f"200\n\n{files}\0".encode("utf-8")
-                        # TODO: Encrypt the response if this command is kept.
+                        msg = encrypt(f"200\n\n{files}\0".encode("utf-8"), get_client_public_key(username))
                         data_socket.sendall(msg)
                     elif command.startswith("stor"):
+                        if not username:
+                            data_socket.sendall(b"500\nYou must be logged in to use this command.\0")
+                            continue
+
                         _, filename = command.split()
                         file_contents = read(data_socket)
                         file_contents_decoded = base64.b64decode(file_contents)
                         try:
                             with open(f"./{filename}", "wb") as file:
                                 file.write(file_contents_decoded)
-                                # TODO: Encrypt the response if this command is kept.
-                                data_socket.sendall(f"200\0".encode("utf-8"))
+                                data_socket.sendall(encrypt(
+                                    f"200\0".encode("utf-8"),
+                                    get_client_public_key(username)
+                                ))
                         except OSError:
-                            # TODO: Encrypt the response if this command is kept.
-                            data_socket.sendall(f"500\0".encode("utf-8"))
+                            data_socket.sendall(encrypt(
+                                f"500\0".encode("utf-8"),
+                                get_client_public_key(username)
+                            ))
                     elif command.startswith("retr"):
                         _, filename = command.split()
                         try:
                             with open(f"./{filename}", "rb") as file:
                                 contents = file.read()
                                 encoded_contents = base64.b64encode(contents)
-                                # TODO: Encrypt the response if this command is kept.
-                                data_socket.sendall(b"200\n\n%b\0" % (encoded_contents))
+                                data_socket.sendall(encrypt(
+                                    b"200\n\n%b\0" % (encoded_contents),
+                                    get_client_public_key(username)
+                                ))
                         except OSError:
-                            # TODO: Encrypt the response if this command is kept.
-                            data_socket.sendall(f"500\0".encode("utf-8"))
+                            data_socket.sendall(encrypt(
+                                f"500\0".encode("utf-8"),
+                                get_client_public_key(username)
+                            ))
                     elif command.startswith("dele"):
                         _, filename = command.split()
                         try:
                             Path(f"./{filename}").unlink(missing_ok=True)
-                            # TODO: Encrypt the response if this command is kept.
-                            data_socket.sendall(f"200\0".encode("utf-8"))
+                            data_socket.sendall(encrypt(
+                                f"200\0".encode("utf-8"),
+                                get_client_public_key(username)
+                            ))
                         except OSError:
-                            # TODO: Encrypt the response if this command is kept.
-                            data_socket.sendall(f"500\0".encode("utf-8"))
+                            data_socket.sendall(encrypt(
+                                f"500\0".encode("utf-8"),
+                                get_client_public_key(username)
+                            ))
 
                 available_ports.appendleft(next_data_port)
                 data_socket.close()
