@@ -11,7 +11,7 @@ available_ports = deque(range(10000,65537))
 active_users = {}
 
 def encrypt(msg, key):
-    return key.encrypt(
+    ciphertext = key.encrypt(
         msg,
         padding.OAEP(
             mgf=padding.MGF1(algorithm=hashes.SHA256()),
@@ -19,10 +19,12 @@ def encrypt(msg, key):
             label=None
         )
     )
+    return base64.b64encode(ciphertext)
 
 def decrypt(msg):
+    ciphertext = base64.b64decode(msg)
     return private_key.decrypt(
-        msg,
+        ciphertext,
         padding.OAEP(
             mgf=padding.MGF1(algorithm=hashes.SHA256()),
             algorithm=hashes.SHA256(),
@@ -45,16 +47,14 @@ def broadcast(msg):
             active_users.pop(username, None)
 
 def read(socket):
-    # TODO: Encrypted ciphertext is binary and may contain null bytes, so using '\0' as a delimiter
-    #       and decoding to UTF-8 here will not work for encrypted commands.
     pieces = [b'']
     total = 0
     while b'\0' not in pieces[-1] and total < 1048576:
         pieces.append(socket.recv(128))
         total += len(pieces[-1])
-    # TODO: Return raw bytes and decrypt them before decoding the plaintext command.
-    data = b''.join(pieces).decode("utf-8").strip("\0")
-    return data
+    data = b''.join(pieces)
+    ciphertext, _, _ = data.partition(b'\0')
+    return decrypt(ciphertext)
 
 class TCPServerRequestHandler(socketserver.BaseRequestHandler):
     def handle(self):
@@ -70,11 +70,8 @@ class TCPServerRequestHandler(socketserver.BaseRequestHandler):
                 username = ""
 
                 while True:
-                    command = read(self.request)
+                    command = read(self.request).decode("utf-8")
                     print("Received encrypted message")
-                    # TODO: Ensure read() returns raw bytes for decrypt(); decode the decrypted
-                    #       plaintext before the command.startswith()/regex checks below.
-                    command = decrypt(command)
 
                     # TODO: The spec says the server should respond with an encrypted SHA256 hash of
                     #       the message, but the output template shows clients receiving actual data.
