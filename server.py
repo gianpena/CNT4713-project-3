@@ -93,14 +93,6 @@ class TCPServerRequestHandler(socketserver.BaseRequestHandler):
                     print("Received encrypted message")
 
                     if command.startswith("login"):
-                        # TODO: Parse the username and the full PEM public key from the decrypted login message.
-                        #       The current split assumes only two whitespace-separated tokens, which will
-                        #       break when the PEM contains newlines.
-                        # TODO: Validate that both username and public key are present; send 500 if any
-                        #       component is missing (per the spec).
-                        # TODO: The spec requires the entire login message (including the client's PEM
-                        #       public key) to be encrypted with RSA-2048, but a PEM key is larger than
-                        #       RSA-OAEP can encrypt. Determine how to handle this under the project rules.
                         _, username, client_public_key_string = command.split("\n", 2)
                         client_public_key = serialization.load_pem_public_key(client_public_key_string.encode("utf-8"))
 
@@ -116,9 +108,7 @@ class TCPServerRequestHandler(socketserver.BaseRequestHandler):
                         if not username:
                             data_socket.sendall(b"500\n\nYou must be logged in to use this command.\0")
                             continue
-
-                        # TODO: If the spec's SHA256-hash-response rule applies, compute the hash and
-                        #       return encrypted hash instead of (or in addition to) the user list.
+                        
                         data_socket.sendall(encrypt(
                             f"200\n\nUsers currently connected: {", ".join(user for user in active_users.keys())}\0".encode("utf-8"),
                             get_client_public_key(username)
