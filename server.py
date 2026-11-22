@@ -2,9 +2,32 @@ import socketserver, socket, sys, re, time, base64
 socketserver.ThreadingTCPServer.allow_reuse_address = True
 from collections import deque
 from pathlib import Path
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import hashes
 
 available_ports = deque(range(10000,65537))
 active_users = {}
+
+def encrypt(msg):
+    return public_key.encrypt(
+        msg,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+
+def decrypt(msg):
+    return private_key.decrypt(
+        msg,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
 
 def broadcast(msg):
     # TODO: Encrypt the message for each specific recipient using their public key before sending.
@@ -162,7 +185,11 @@ if len(sys.argv) < 2:
 HOST, PORT = "0.0.0.0", int(sys.argv[1])
 print("Starting server…")
 print("Creating RSA keypair")
-# TODO: Generate an RSA 2048 public-private key pair and store it in memory.
+private_key = rsa.generate_private_key(
+    public_exponent=65537,
+    key_size=2048
+)
+public_key = private_key.public_key()
 print("RSA keypair created")
 print("Creating server socket")
 with socketserver.ThreadingTCPServer((HOST, PORT), TCPServerRequestHandler) as server:
