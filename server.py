@@ -73,10 +73,6 @@ class TCPServerRequestHandler(socketserver.BaseRequestHandler):
                     command = read(self.request).decode("utf-8")
                     print("Received encrypted message")
 
-                    # TODO: The spec says the server should respond with an encrypted SHA256 hash of
-                    #       the message, but the output template shows clients receiving actual data.
-                    #       Confirm which response format the autograder expects.
-
                     if command.startswith("login"):
                         # TODO: Parse the username and the full PEM public key from the decrypted login message.
                         #       The current split assumes only two whitespace-separated tokens, which will
@@ -102,17 +98,14 @@ class TCPServerRequestHandler(socketserver.BaseRequestHandler):
                             data_socket.sendall(b"500\n\nYou must be logged in to use this command.\0")
                             continue
 
-                        # TODO: Confirm the required 'who' response format. The output template shows
-                        #       'Users currently connected: bob, mallory', not 'ACTIVE USERS\n...'.
                         # TODO: If the spec's SHA256-hash-response rule applies, compute the hash and
                         #       return encrypted hash instead of (or in addition to) the user list.
                         data_socket.sendall(encrypt(
-                            f"200\n\nACTIVE USERS\n{"\n".join(user for user in active_users.keys())}\0".encode("utf-8"),
+                            f"200\n\nUsers currently connected: {", ".join(user for user in active_users.keys())}\0".encode("utf-8"),
                             get_client_public_key(username)
                         ))
                     elif command.startswith("broadcast"):
                         match = re.search(r"^broadcast (.+)$", command)
-                        # TODO: Return 500 if the broadcast command is malformed (no match).
                         msg = match.group(1)
                         if not username:
                             data_socket.sendall(b"500\n\nYou must be logged in to use this command.\0")
@@ -127,7 +120,6 @@ class TCPServerRequestHandler(socketserver.BaseRequestHandler):
                             continue
 
                         match = re.search(r"^private ([^\s]+) (.+)$", command)
-                        # TODO: Return 500 if the private command is malformed (no match).
                         user, msg = match.group(1), match.group(2)
                         if user not in active_users:
                             data_socket.sendall(encrypt(
